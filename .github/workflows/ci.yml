@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master, dev]
+
+jobs:
+  lint-and-check:
+    name: Lint & Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+          pip install -r requirements.txt
+
+      - name: Ruff syntax check (compile)
+        run: ruff check --select S101 --no-fix . || true
+
+      - name: Python compile check
+        run: python -m py_compile transcribe.py
+
+      - name: Import check
+        run: python -c "from transcribe import transcribe_audio, transcribe_batch"
+
+  build-windows:
+    name: Windows Import Test
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Python compile check
+        run: python -m py_compile transcribe.py
+
+      - name: Import check
+        run: python -c "from transcribe import transcribe_audio, transcribe_batch"
+
+  ruff-lint:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check .
+
+      - name: Run ruff format check
+        run: ruff format --check .
