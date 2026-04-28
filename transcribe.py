@@ -57,13 +57,15 @@ def _init_model(model_size: str = "base") -> WhisperModel:
         The model is automatically downloaded from Hugging Face Hub on first run
         and cached at ~/.cache/huggingface/hub/. Subsequent runs use the local cache.
     """
-    print(f"[Init] Loading model: {model_size} (CPU / INT8) ...")
+    print(f"[Init] Loading model: {model_size} (CPU / int8) ...")
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
     print("[Init] Model loaded.")
     return model
 
 
-def transcribe_single(file_path: str, model: WhisperModel, language: str = "en") -> str:
+def transcribe_single(
+    file_path: str, model: WhisperModel, language: str = "en"
+) -> tuple[list[dict], str]:
     """
     Transcribe a single audio file using the given model.
 
@@ -74,21 +76,11 @@ def transcribe_single(file_path: str, model: WhisperModel, language: str = "en")
                    Set to None for auto-detection. Defaults to "en".
 
     Returns:
-        Full transcript text with timestamps.
-
-    Notes:
-        beam_size=5 (default)
-            Beam search width. Higher values improve accuracy slightly
-            but slow down inference. 5 is a good balance.
-
-        When language is explicitly set, the model skips language detection
-        and uses the specified language directly, slightly improving speed
-        and accuracy.
-
-        segments is a lazy generator that yields one segment at a time,
-        keeping memory usage low even for hours-long audio files.
+        A tuple of (segments_data, full_text) where:
+          - segments_data: list of {"start": float, "end": float, "text": str}
+          - full_text:     plain text with all segments joined by newlines
     """
-    segments_iter, info = model.transcribe(file_path, beam_size=5, language=language)
+    segments_iter, info = model.transcribe(file_path, beam_size=10, language=language)
 
     print(f"\n{'=' * 60}")
     print(f"File: {os.path.basename(file_path)}")
@@ -96,40 +88,44 @@ def transcribe_single(file_path: str, model: WhisperModel, language: str = "en")
     print(f"Duration: {info.duration:.2f}s")
     print(f"{'=' * 60}")
 
-    full_text = ""
+    segments_data: list[dict] = []
+    text_parts: list[str] = []
     pbar = tqdm(total=info.duration, unit="s", desc="Transcribing", ncols=80)
 
     for segment in segments_iter:
-        line = f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text.strip()}"
-        print(line)
-        if full_text:
-            full_text += "\n"
-        full_text += line
+        stripped = segment.text.strip()
+        print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {stripped}")
 
+        segments_data.append(
+            {
+                "start": round(segment.start, 3),
+                "end": round(segment.end, 3),
+                "text": stripped,
+            }
+        )
+        text_parts.append(stripped)
         pbar.update(segment.end - segment.start)
 
     pbar.close()
 
-    base_name = os.path.splitext(file_path)[0]
-    output_path = base_name + ".txt"
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(full_text)
-
-    print(f"[Done] Saved to: {output_path}\n")
-    return full_text
+    full_text = "\n".join(text_parts)
+    return segments_data, full_text
 
 
 def transcribe_audio(
     file_path: str, model_size: str = "base", language: str = "en"
-) -> str:
+) -> tuple[list[dict], str]:
     """
     Public API entry point: transcribe a single audio file.
-    Handles model initialization, file validation, transcription and saving.
+    Handles model initialization, file validation, and transcription.
 
     Args:
         file_path:   Path to the audio file.
         model_size:  Model size, defaults to "base".
         language:    Language code to force, defaults to "en". Set to None for auto-detection.
+
+    Returns:
+        A tuple of (segments_data, full_text).
     """
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"Audio file not found: {file_path}")
@@ -140,7 +136,7 @@ def transcribe_audio(
 
 def transcribe_batch(
     directory: str, model_size: str = "base", language: str = "en"
-) -> list:
+) -> list[tuple[list[dict], str]]:
     """
     Batch transcribe: scan a directory for supported audio files and transcribe them.
     All files share a single model instance to avoid reloading.
@@ -151,7 +147,7 @@ def transcribe_batch(
         language:    Language code to force, defaults to "en". Set to None for auto-detection.
 
     Returns:
-        List of transcript texts, one per file.
+        List of (segments_data, full_text) tuples, one per file.
     """
     if not os.path.isdir(directory):
         raise NotADirectoryError(f"Directory not found: {directory}")
@@ -174,11 +170,11 @@ def transcribe_batch(
     for i, fp in enumerate(audio_files, 1):
         print(f"\n>>> [{i}/{len(audio_files)}]")
         try:
-            text = transcribe_single(fp, model, language=language)
-            results.append(text)
+            result = transcribe_single(fp, model, language=language)
+            results.append(result)
         except Exception as e:
             print(f"[Error] Failed to transcribe {fp}: {e}")
-            results.append("")
+            results.append(([], ""))
 
     print(f"\n{'=' * 60}")
     print(f"Batch transcription complete! Processed {len(audio_files)} file(s).")
@@ -204,11 +200,36 @@ if __name__ == "__main__":
     if language == "auto":
         language = None
 
+    DEFAULT_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+
     try:
         if os.path.isdir(target):
-            transcribe_batch(target, model_size, language=language)
+            results = transcribe_batch(target, model_size, language=language)
+            os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+            for fp, (segments_data, full_text) in zip(
+                sorted(
+                    f
+                    for f in os.listdir(target)
+                    if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS
+                ),
+                results,
+            ):
+                if full_text:
+                    base = os.path.splitext(fp)[0]
+                    out_path = os.path.join(DEFAULT_OUTPUT_DIR, base + ".txt")
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(full_text)
+                    print(f"[Done] Saved to: {out_path}")
         elif os.path.isfile(target):
-            transcribe_audio(target, model_size, language=language)
+            segments_data, full_text = transcribe_audio(
+                target, model_size, language=language
+            )
+            os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+            base = os.path.splitext(os.path.basename(target))[0]
+            out_path = os.path.join(DEFAULT_OUTPUT_DIR, base + ".txt")
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(full_text)
+            print(f"[Done] Saved to: {out_path}")
         else:
             print(f"[Error] Path not found: {target}")
             sys.exit(1)
