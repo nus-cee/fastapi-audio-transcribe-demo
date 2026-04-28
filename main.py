@@ -1,20 +1,17 @@
 import os
 import tempfile
-import uuid
-from datetime import datetime, timezone
 
-import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
 
-from aws_utils import upload_text_to_s3
 from transcribe import _init_model, transcribe_single
 
 app = FastAPI(title="Audio-to-Text API", version="1.0.0")
 
 _model = None
 MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
 @app.on_event("startup")
@@ -23,62 +20,41 @@ def startup_event():
     _model = _init_model(MODEL_SIZE)
 
 
-class TranscribeRequest(BaseModel):
-    presignedUrl: str = Field(..., description="Presigned URL of the audio file")
-    language: str = Field(default="en", description="Language code (en, zh, ja, etc.)")
-    model_size: str = Field(
-        default="", description="Override model size (tiny/base/small/medium/large-v3)"
-    )
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    html_path = os.path.join(STATIC_DIR, "index.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
 
 
 @app.post("/api/transcribe")
-def api_transcribe(req: TranscribeRequest):
-    try:
-        resp = requests.get(req.presignedUrl, stream=True, timeout=300)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to download audio: {exc}")
-
-    content_type = resp.headers.get("Content-Type", "")
-    ext = _guess_extension(content_type, req.presignedUrl)
-
+async def api_transcribe(
+    file: UploadFile = File(..., description="Audio file"),
+    language: str = Form(default="en", description="Language code (en, zh, ja, etc.)"),
+    model_size: str = Form(
+        default="", description="Override model size (tiny/base/small/medium/large-v3)"
+    ),
+):
+    ext = _guess_extension(file.content_type or "", file.filename or "")
     tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     try:
-        for chunk in resp.iter_content(chunk_size=8192):
-            tmp.write(chunk)
+        content = await file.read()
+        tmp.write(content)
         tmp.flush()
         tmp.close()
 
         model = _model
-        if req.model_size:
-            model = _init_model(req.model_size)
+        if model_size:
+            model = _init_model(model_size)
 
         segments_data, full_text = transcribe_single(
-            tmp.name, model, language=req.language
+            tmp.name, model, language=language
         )
-
-        if not full_text:
-            return JSONResponse(
-                content={"segments": [], "full_text": "", "download_url": ""}
-            )
-
-        lines = []
-        for seg in segments_data:
-            start_mm, start_ss = divmod(seg["start"], 60)
-            end_mm, end_ss = divmod(seg["end"], 60)
-            lines.append(f"[{start_mm:06.3f} -> {end_mm:06.3f}] {seg['text']}")
-        timestamped_text = "\n".join(lines)
-
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        short_id = uuid.uuid4().hex[:8]
-        object_key = f"transcripts/{timestamp}_{short_id}.txt"
-        download_url = upload_text_to_s3(timestamped_text, object_key)
 
         return JSONResponse(
             content={
                 "segments": segments_data,
                 "full_text": full_text,
-                "download_url": download_url,
             }
         )
     finally:
@@ -88,7 +64,7 @@ def api_transcribe(req: TranscribeRequest):
             pass
 
 
-def _guess_extension(content_type: str, url: str) -> str:
+def _guess_extension(content_type: str, filename: str) -> str:
     mapping = {
         "audio/mpeg": ".mp3",
         "audio/wav": ".wav",
@@ -104,10 +80,7 @@ def _guess_extension(content_type: str, url: str) -> str:
         for key, ext in mapping.items():
             if key in content_type:
                 return ext
-    from urllib.parse import urlparse
-
-    path = urlparse(url).path
-    _, ext = os.path.splitext(path)
+    _, ext = os.path.splitext(filename)
     if ext and len(ext) <= 5:
         return ext
     return ".mp3"

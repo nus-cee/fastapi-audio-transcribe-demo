@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audio to Text</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
+.container { max-width: 700px; margin: 0 auto; }
+h1 { text-align: center; margin-bottom: 24px; font-size: 1.6em; }
+.card { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.9em; }
+select, input[type="file"] { width: 100%; padding: 8px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.9em; margin-bottom: 14px; }
+.row { display: flex; gap: 12px; }
+.row > div { flex: 1; }
+button { width: 100%; padding: 12px; border: none; border-radius: 6px; font-size: 1em; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+button:hover { opacity: 0.85; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: #4f46e5; color: #fff; }
+.btn-download { background: #16a34a; color: #fff; }
+#status { text-align: center; padding: 12px; font-size: 0.9em; color: #666; }
+.error { color: #dc2626; }
+#result { display: none; }
+textarea { width: 100%; height: 200px; padding: 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.9em; resize: vertical; font-family: inherit; }
+.actions { display: flex; gap: 12px; margin-top: 12px; }
+.actions button { flex: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Audio to Text</h1>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="language">Language</label>
+        <select id="language">
+          <option value="en">English (en)</option>
+          <option value="zh">Chinese (zh)</option>
+          <option value="ja">Japanese (ja)</option>
+          <option value="ko">Korean (ko)</option>
+          <option value="">Auto Detect</option>
+        </select>
+      </div>
+      <div>
+        <label for="model_size">Model Size</label>
+        <select id="model_size">
+          <option value="">Default (base)</option>
+          <option value="tiny">tiny</option>
+          <option value="base">base</option>
+          <option value="small">small</option>
+          <option value="medium">medium</option>
+          <option value="large-v3">large-v3</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="file">Audio File</label>
+    <input type="file" id="file" accept="audio/*,video/mp4">
+
+    <button id="btnTranscribe" class="btn-primary" disabled>Start Transcription</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="result" class="card">
+    <label for="output">Transcription Result</label>
+    <textarea id="output" readonly></textarea>
+    <div class="actions">
+      <button id="btnDownload" class="btn-download">Download .txt</button>
+      <button id="btnCopy" class="btn-primary">Copy to Clipboard</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const fileInput = document.getElementById('file');
+const btnTranscribe = document.getElementById('btnTranscribe');
+const btnDownload = document.getElementById('btnDownload');
+const btnCopy = document.getElementById('btnCopy');
+const statusDiv = document.getElementById('status');
+const resultDiv = document.getElementById('result');
+const outputTextarea = document.getElementById('output');
+
+let currentFileName = '';
+let segmentsData = [];
+
+fileInput.addEventListener('change', () => {
+  btnTranscribe.disabled = !fileInput.files.length;
+  if (fileInput.files.length) {
+    currentFileName = fileInput.files[0].name.replace(/\.[^/.]+$/, '');
+  }
+});
+
+btnTranscribe.addEventListener('click', async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  const language = document.getElementById('language').value;
+  const modelSize = document.getElementById('model_size').value;
+
+  const formData = new FormData();
+  formData.append('file', file);
+  if (language) formData.append('language', language);
+  if (modelSize) formData.append('model_size', modelSize);
+
+  btnTranscribe.disabled = true;
+  statusDiv.textContent = 'Transcribing... This may take a while.';
+  statusDiv.className = '';
+  resultDiv.style.display = 'none';
+
+  try {
+    const resp = await fetch('/api/transcribe', { method: 'POST', body: formData });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || 'Server error');
+    }
+    const data = await resp.json();
+
+    if (!data.full_text) {
+      statusDiv.textContent = 'No speech detected in the audio.';
+      return;
+    }
+
+    outputTextarea.value = data.full_text;
+    segmentsData = data.segments || [];
+    resultDiv.style.display = 'block';
+    statusDiv.textContent = 'Transcription complete!';
+  } catch (e) {
+    statusDiv.textContent = 'Error: ' + e.message;
+    statusDiv.className = 'error';
+  } finally {
+    btnTranscribe.disabled = false;
+  }
+});
+
+btnDownload.addEventListener('click', () => {
+  let content;
+  if (segmentsData.length > 0) {
+    content = segmentsData
+      .map(s => `[${formatTime(s.start)} -> ${formatTime(s.end)}] ${s.text}`)
+      .join('\n');
+  } else {
+    content = outputTextarea.value;
+  }
+  if (!content) return;
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (currentFileName || 'transcript') + '.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(ms).padStart(3, '0');
+}
+
+btnCopy.addEventListener('click', () => {
+  navigator.clipboard.writeText(outputTextarea.value).then(() => {
+    btnCopy.textContent = 'Copied!';
+    setTimeout(() => { btnCopy.textContent = 'Copy to Clipboard'; }, 1500);
+  });
+});
+</script>
+</body>
+</html>
