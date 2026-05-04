@@ -1,8 +1,10 @@
 import os
-import tempfile
+from io import BytesIO
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
 
 from transcribe import _init_model, transcribe_single
 
@@ -35,33 +37,58 @@ async def api_transcribe(
         default="", description="Override model size (tiny/base/small/medium/large-v3)"
     ),
 ):
-    ext = _guess_extension(file.content_type or "", file.filename or "")
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    content = await file.read()
+    buf = BytesIO(content)
+    buf.name = file.filename or "audio"
+
+    model = _model
+    if model_size:
+        model = _init_model(model_size)
+
+    segments_data, full_text = transcribe_single(buf, model, language=language)
+
+    return JSONResponse(
+        content={
+            "segments": segments_data,
+            "full_text": full_text,
+        }
+    )
+
+
+class TranscribeUrlRequest(BaseModel):
+    url: str = Field(..., description="URL of the audio file to download")
+    language: str = Field(default="en", description="Language code (en, zh, ja, etc.)")
+    model_size: str = Field(
+        default="", description="Override model size (tiny/base/small/medium/large-v3)"
+    )
+
+
+@app.post("/api/transcribe-url")
+async def api_transcribe_url(req: TranscribeUrlRequest):
     try:
-        content = await file.read()
-        tmp.write(content)
-        tmp.flush()
-        tmp.close()
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.get(req.url)
+            resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to download audio: {exc}")
 
-        model = _model
-        if model_size:
-            model = _init_model(model_size)
+    buf = BytesIO(resp.content)
+    buf.name = req.url
 
-        segments_data, full_text = transcribe_single(
-            tmp.name, model, language=language
-        )
+    model = _model
+    if req.model_size:
+        model = _init_model(req.model_size)
 
-        return JSONResponse(
-            content={
-                "segments": segments_data,
-                "full_text": full_text,
-            }
-        )
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+    segments_data, full_text = transcribe_single(
+        buf, model, language=req.language
+    )
+
+    return JSONResponse(
+        content={
+            "segments": segments_data,
+            "full_text": full_text,
+        }
+    )
 
 
 def _guess_extension(content_type: str, filename: str) -> str:

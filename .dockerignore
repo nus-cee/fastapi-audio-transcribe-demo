@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.git/
+.github/
+.gitignore
+*.pyc
+output/
+diagrams/
+example-request.json
+=0.27
+README.md

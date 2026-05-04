@@ -14,6 +14,9 @@ Examples:
 
 import os
 import sys
+from io import BytesIO
+from typing import Union
+
 from tqdm import tqdm
 from faster_whisper import WhisperModel
 
@@ -64,26 +67,30 @@ def _init_model(model_size: str = "base") -> WhisperModel:
 
 
 def transcribe_single(
-    file_path: str, model: WhisperModel, language: str = "en"
+    audio: Union[str, BytesIO], model: WhisperModel, language: str = "en"
 ) -> tuple[list[dict], str]:
     """
     Transcribe a single audio file using the given model.
 
     Args:
-        file_path: Absolute or relative path to the audio file.
-        model:     An initialized WhisperModel instance.
-        language:  Language code to force, e.g. "en", "zh", "ja".
-                   Set to None for auto-detection. Defaults to "en".
+        audio:    A file path (str) or a BytesIO object containing audio data.
+        model:    An initialized WhisperModel instance.
+        language: Language code to force, e.g. "en", "zh", "ja".
+                  Set to None for auto-detection. Defaults to "en".
 
     Returns:
         A tuple of (segments_data, full_text) where:
           - segments_data: list of {"start": float, "end": float, "text": str}
           - full_text:     plain text with all segments joined by newlines
     """
-    segments_iter, info = model.transcribe(file_path, beam_size=10, language=language)
+    if isinstance(audio, BytesIO):
+        audio.seek(0)
 
+    segments_iter, info = model.transcribe(audio, beam_size=10, language=language)
+
+    label = getattr(audio, "name", None) if isinstance(audio, BytesIO) else os.path.basename(audio)
     print(f"\n{'=' * 60}")
-    print(f"File: {os.path.basename(file_path)}")
+    print(f"File: {label}")
     print(f"Language: {info.language} (probability: {info.language_probability:.2%})")
     print(f"Duration: {info.duration:.2f}s")
     print(f"{'=' * 60}")

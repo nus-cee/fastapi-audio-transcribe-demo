@@ -1,0 +1,240 @@
+%%{init: {'themeVariables': {'fontSize': '13px', 'fontFamily': 'Arial, sans-serif'}}}%%
+flowchart TD
+    TITLE["<b>Speech-to-Text — Architecture Decision Flow</b><br/><i>v2 — Accurate Current vs Target State</i>"]
+
+    %% ============================================================
+    %% STYLING
+    %% ============================================================
+    classDef implemented fill:#d4edda,stroke:#28a745,stroke-width:3px,color:#155724
+    classDef target fill:#d4edda,stroke:#28a745,stroke-width:2px,stroke-dasharray: 5 5,color:#155724
+    classDef rejected fill:#f8d7da,stroke:#dc3545,stroke-width:1px,color:#721c24
+    classDef decision fill:#fff3cd,stroke:#ffc107,stroke-width:2px,color:#856404
+    classDef pending fill:#fff3cd,stroke:#ff9800,stroke-width:2px,stroke-dasharray: 5 5,color:#e65100
+    classDef storage fill:#d1ecf1,stroke:#17a2b8,stroke-width:2px,color:#0c5460
+    classDef user fill:#e2e3e5,stroke:#6c757d,stroke-width:2px,color:#383d41
+    classDef infra fill:#fff8e1,stroke:#ff8f00,stroke-width:2px,color:#e65100
+
+    %% ============================================================
+    %% USER INPUT LAYER
+    %% ============================================================
+    subgraph INPUT ["User Input"]
+        direction LR
+        USER((User)):::user
+        UPLOAD{Upload Method}:::decision
+        WEB["Web Page Upload<br/>static/index.html"]:::implemented
+        BACKEND["Direct API Call<br/>POST /api/transcribe"]:::implemented
+        URL_UPLOAD["URL-based Upload<br/>POST /api/transcribe-url"]:::implemented
+        LIMIT[/Single File Limit: 100MB<br/><i>stated but NOT enforced</i>/]:::pending
+
+        USER --> UPLOAD
+        UPLOAD -->|A| WEB
+        UPLOAD -->|B| BACKEND
+        UPLOAD -->|C| URL_UPLOAD
+        WEB --> LIMIT
+        BACKEND --> LIMIT
+        URL_UPLOAD --> LIMIT
+    end
+
+    %% ============================================================
+    %% SECTION A: IMPLEMENTED ARCHITECTURE ✅
+    %% ============================================================
+    subgraph SEC_A ["Section A — Already Implemented ✅"]
+        direction TB
+
+        subgraph A_IMPL ["Current Request Flow"]
+            direction TB
+            FASTAPI["<b>A1. FastAPI</b> ✅<br/>+ Uvicorn + Pydantic<br/>Async route handlers<br/>Auto OpenAPI docs"]:::implemented
+
+            MODEL_LOAD["<b>A4. Startup Singleton</b> ✅<br/>_model loaded on startup<br/>Global variable in main.py<br/>~150MB–1.5GB RAM"]:::implemented
+
+            ENGINE["<b>A2. faster-whisper</b> ✅<br/>CTranslate2 backend<br/>~4x faster than openai-whisper<br/>HuggingFace model cache"]:::implemented
+
+            CPU["<b>A3. CPU + INT8</b> ✅<br/>device=cpu · compute_type=int8<br/>~75% memory reduction<br/>~2-4x speedup vs float32"]:::implemented
+
+            SYNC["<b>A5. Synchronous Processing</b> ✅<br/>async def but blocks event loop<br/>model.transcribe() is CPU-bound<br/>One request at a time"]:::implemented
+
+            JSON_OUT["<b>A10. JSON Response</b> ✅<br/>segments + full_text<br/>Frontend generates .txt download<br/>No server-side file generation"]:::implemented
+        end
+
+        subgraph A_FRONT ["Frontend & CI"]
+            direction LR
+            HTML["<b>A6. Single-page HTML</b> ✅<br/>Inline CSS/JS<br/>No build step / no npm<br/>Language & model selectors"]:::implemented
+
+            CI["<b>A7. GitHub Actions</b> ✅<br/>Ruff lint + format<br/>Python compile check<br/>Ubuntu + Windows matrix"]:::implemented
+        end
+
+        LIMIT --> FASTAPI
+        MODEL_LOAD --> ENGINE
+        ENGINE --> CPU
+        FASTAPI --> SYNC
+        CPU --> SYNC
+        SYNC --> JSON_OUT
+    end
+
+    %% ============================================================
+    %% SECTION B: DECIDED, NOT IMPLEMENTED 🔲
+    %% ============================================================
+    subgraph SEC_B ["Section B — Decided, Not Implemented 🔲"]
+        direction TB
+
+        subgraph B_STOR ["B1. File Storage Migration"]
+            direction TB
+            B1Q{Stateful → Stateless?}:::decision
+            B1_NOW["<b>Current: Stateful</b><br/>BytesIO in-memory<br/>No file persistence<br/>No S3 integration"]:::implemented
+            B1_TARGET["<b>Target: AWS S3</b> 🔲<br/>boto3 + S3 key design<br/>Pre-signed URLs<br/>Stateless server"]:::target
+            S3[("AWS S3 Bucket<br/>uploads/ + results/")]:::storage
+
+            B1Q --> B1_NOW
+            B1Q --> B1_TARGET
+            B1_TARGET --> S3
+        end
+
+        subgraph B_ASYNC ["B2-B3. Async Processing Migration"]
+            direction TB
+            B2Q{Sync → Async?}:::decision
+            B2_NOW["<b>Current: Synchronous</b><br/>Blocks event loop<br/>No concurrency control<br/>Single request at a time"]:::implemented
+            B3_INTERIM["<b>Interim: Thread Pool</b> 🔲<br/>asyncio.to_thread()<br/>ThreadPoolExecutor<br/>Configurable workers"]:::target
+            B3_TARGET["<b>Target: Task Queue</b> 🔲<br/>Celery + Redis/RabbitMQ<br/>Distributed · Persistent<br/>Retry logic · Monitoring"]:::target
+
+            B2Q --> B2_NOW
+            B2Q --> B3_INTERIM
+            B3_INTERIM --> B3_TARGET
+        end
+
+        subgraph B_DOCKER ["B4. Containerization"]
+            direction TB
+            B4_NOW["<b>Current: Bare Metal</b><br/>pip install -r requirements.txt<br/>No Dockerfile exists"]:::implemented
+            B4_TARGET["<b>Target: Dockerfile</b> 🔲<br/>python:3.12-slim base<br/>Multi-stage build<br/>Pre-cached model weights<br/>Health check endpoint"]:::target
+
+            B4_NOW -.->|migrate| B4_TARGET
+        end
+    end
+
+    JSON_OUT --> B1Q
+    JSON_OUT --> B2Q
+    JSON_OUT --> B4_NOW
+
+    %% ============================================================
+    %% SECTION C: PENDING DECISIONS ❓
+    %% ============================================================
+    subgraph SEC_C ["Section C — Needs Decision ❓"]
+        direction TB
+
+        subgraph C_SEC ["Security Decisions"]
+            direction TB
+            C1{C1. SSRF Protection?}:::pending
+            C1A["A. Blacklist<br/>Block known-bad IPs<br/>Incomplete coverage"]:::rejected
+            C1B["<b>B. Whitelist ✦</b><br/>S3 bucket + approved domains<br/>Strongest security"]:::decision
+            C1C["C. Disable URL endpoint<br/>File upload only<br/>Simplest & safest"]:::rejected
+            C1D["D. DNS resolution check<br/>Reject private IPs<br/>Robust but complex"]:::rejected
+            C1 --> C1A
+            C1 --> C1B
+            C1 --> C1C
+            C1 --> C1D
+
+            C5{C5. Authentication?}:::pending
+            C5A["A. No auth (current)"]:::rejected
+            C5B["<b>B. API Key ✦</b><br/>X-API-Key header<br/>+ Network isolation"]:::decision
+            C5C["C. OAuth2/OIDC<br/>Keycloak · Azure AD<br/>Overkill for internal use"]:::rejected
+            C5D["D. Network-level only<br/>VPN · Firewall"]:::rejected
+            C5 --> C5A
+            C5 --> C5B
+            C5 --> C5C
+            C5 --> C5D
+        end
+
+        subgraph C_PERF ["Performance & Reliability"]
+            direction TB
+            C2{C2. Concurrency?}:::pending
+            C2A["<b>A. Semaphore + Pool ✦</b><br/>asyncio.Semaphore<br/>+ Thread Pool"]:::decision
+            C2B["B. Rate Limiting<br/>slowapi per-IP"]:::rejected
+            C2C["C. Queue + Backpressure<br/>FIFO processing"]:::rejected
+            C2D["D. No control (current)<br/>CPU saturation risk"]:::rejected
+            C2 --> C2A
+            C2 --> C2B
+            C2 --> C2C
+            C2 --> C2D
+
+            C3{C3. File Size Limit?}:::pending
+            C3A["<b>A+C. FastAPI + Nginx ✦</b><br/>Stream read + Content-Length<br/>413 Payload Too Large"]:::decision
+            C3B["B. Middleware only"]:::rejected
+            C3 --> C3A
+            C3 --> C3B
+
+            C4{C4. Audio Validation?}:::pending
+            C4A["A. Extension only (current)"]:::rejected
+            C4B["<b>B. MIME + Extension ✦</b><br/>Content-Type validation<br/>415 Unsupported Media Type"]:::decision
+            C4C["C. Magic bytes"]:::rejected
+            C4D["D. Let faster-whisper handle"]:::rejected
+            C4 --> C4A
+            C4 --> C4B
+            C4 --> C4C
+            C4 --> C4D
+        end
+
+        subgraph C_OPS ["Operations & Configuration"]
+            direction TB
+            C6{C6. Logging?}:::pending
+            C6A["<b>A. Python logging ✦</b><br/>Zero dependency<br/>Structured log format"]:::decision
+            C6B["B. structlog"]:::rejected
+            C6C["C. Keep print() (current)"]:::rejected
+            C6 --> C6A
+            C6 --> C6B
+            C6 --> C6C
+
+            C7{C7. Error Handling?}:::pending
+            C7A["<b>A. FastAPI handlers ✦</b><br/>Global exception_handler<br/>Standardized JSON errors"]:::decision
+            C7B["B. Middleware-based"]:::rejected
+            C7C["C. Per-endpoint try/except (current)"]:::rejected
+            C7 --> C7A
+            C7 --> C7B
+            C7 --> C7C
+
+            C8{C8. Graceful Shutdown?}:::pending
+            C8A["A. No handling (current)"]:::rejected
+            C8B["<b>B. Lifespan ctx ✦</b><br/>Replace on_event startup<br/>Wait for in-progress tasks<br/>Configurable timeout"]:::decision
+            C8 --> C8A
+            C8 --> C8B
+
+            C9{C9. Config Management?}:::pending
+            C9A["A. os.environ only (current)"]:::rejected
+            C9B["<b>B. pydantic-settings ✦</b><br/>BaseSettings class<br/>.env file support<br/>Type-safe config"]:::decision
+            C9C["C. python-dotenv"]:::rejected
+            C9 --> C9A
+            C9 --> C9B
+            C9 --> C9C
+
+            C10{C10. Output Format?}:::pending
+            C10A["A. JSON only (current)"]:::rejected
+            C10B["B. Server-side files"]:::rejected
+            C10C["<b>C. Multi-format ✦</b><br/>?format=txt|srt|vtt|json<br/>Content-Disposition header<br/>JSON default for API"]:::decision
+            C10 --> C10A
+            C10 --> C10B
+            C10 --> C10C
+        end
+    end
+
+    SEC_A --> SEC_C
+    SEC_B -.->|target feeds into| SEC_C
+
+    %% ============================================================
+    %% OUTPUT
+    %% ============================================================
+    OUTPUT["Transcription Result"]:::implemented
+    DL_TXT(("User Downloads<br/>.txt file")):::user
+
+    SEC_C --> OUTPUT
+    OUTPUT --> DL_TXT
+
+    %% ============================================================
+    %% LEGEND
+    %% ============================================================
+    subgraph LEGEND ["Legend"]
+        direction LR
+        L1["✅ Implemented"]:::implemented
+        L2["🔲 Decided · Not Implemented"]:::target
+        L3["❓ Pending Decision"]:::pending
+        L4["✦ Recommended"]:::decision
+        L5["✗ Rejected"]:::rejected
+        L6["Storage"]:::storage
+    end
